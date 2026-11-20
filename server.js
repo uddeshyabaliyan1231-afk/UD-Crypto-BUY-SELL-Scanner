@@ -4,101 +4,110 @@ const cors = require("cors");
 const axios = require("axios");
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
 app.use(express.static("public"));
 
-const BINANCE_HOSTS = [
-  "https://fapi.binance.com",
-  "https://fapi1.binance.com",
-  "https://fapi2.binance.com",
-  "https://fapi3.binance.com",
-  "https://fapi4.binance.com"
-];
+const API = "https://api.coindcx.com";
+const PUBLIC_API = "https://public.coindcx.com";
 
 const http = axios.create({
-  timeout: 15000,
-  headers: {
-    "User-Agent": "Mozilla/5.0 UD-Crypto-Scanner"
-  }
+  timeout: 20000,
+  headers: { "User-Agent": "UD-Crypto-Scanner/1.0" }
 });
 
-async function binanceRequest(path, params = {}) {
-  let lastError;
+let cachedPairs = [];
+let cacheTime = 0;
 
-  for (const host of BINANCE_HOSTS) {
-    try {
-      const response = await http.get(host + path, { params });
-      return response.data;
-    } catch (error) {
-      lastError = error;
-
-      console.error("BINANCE REQUEST FAILED:", {
-        host,
-        path,
-        status: error.response?.status,
-        message: error.message,
-        response: error.response?.data
-      });
-    }
+async function getInstruments() {
+  if (cachedPairs.length && Date.now() - cacheTime < 300000) {
+    return cachedPairs;
   }
 
-  const status = lastError?.response?.status;
-  const responseData = lastError?.response?.data;
-
-  throw new Error(
-    responseData?.msg ||
-    responseData?.message ||
-    `All Binance endpoints failed. HTTP ${status || "connection error"}: ${lastError?.message || "Unknown error"}`
+  const response = await http.get(
+    API + "/exchange/v1/derivatives/futures/data/active_instruments",
+    { params: { "margin_currency_short_name[]": "USDT" } }
   );
+
+  if (!Array.isArray(response.data)) {
+    throw new Error("Invalid CoinDCX instruments response");
+  }
+
+  cachedPairs = response.data.filter(
+    p => typeof p === "string" && p.endsWith("_USDT")
+  );
+
+  cacheTime = Date.now();
+
+  if (!cachedPairs.length) {
+    throw new Error("No active USDT futures pairs found");
+  }
+
+  return cachedPairs;
 }
 
-// GET ALL USDT PERPETUAL COINS
+function displaySymbol(pair) {
+  return pair.replace(/^B-/, "").replace(/_/g, "");
+}
 
 async function getSymbols() {
-  const data = await binanceRequest("/fapi/v1/exchangeInfo");
-
-  if (!Array.isArray(data.symbols)) {
-    throw new Error("Invalid Binance exchange information");
-  }
-
-  return data.symbols
-    .filter(coin =>
-      coin.contractType === "PERPETUAL" &&
-      coin.quoteAsset === "USDT" &&
-      coin.status === "TRADING"
-    )
-    .map(coin => coin.symbol);
+  const pairs = await getInstruments();
+  return pairs.map(displaySymbol).sort();
 }
-
-// GET 5 MINUTE CANDLES
 
 async function getCandles(symbol) {
-  const data = await binanceRequest("/fapi/v1/klines", {
-    symbol,
-    interval: "5m",
-    limit: 100
-  });
+  const pairs = await getInstruments();
 
-  if (!Array.isArray(data) || data.length < 60) {
-    throw new Error("Insufficient candle data for " + symbol);
+  const pair = pairs.find(
+    p => displaySymbol(p).toUpperCase() === symbol.toUpperCase()
+  );
+
+  if (!pair) {
+    throw new Error(symbol + " is not an active CoinDCX USDT futures pair");
   }
 
-  return data.map(candle => ({
-    open: Number(candle[1]),
-    high: Number(candle[2]),
-    low: Number(candle[3]),
-    close: Number(candle[4]),
-    volume: Number(candle[5])
-  }));
-}
+  const now = Math.floor(Date.now() / 1000);
+  const from = now - 36000;
 
-// EMA CALCULATION
+  const response = await http.get(
+    PUBLIC_API + "/market_data/candlesticks",
+    {
+      params: {
+        pair,
+        from,
+        to: now,
+        resolution: "5",
+        pcode: "f"
+      }
+    }
+  );
+
+  const rows = Array.isArray(response.data)
+    ? response.data
+    : response.data?.data;
+
+  if (!Array.isArray(rows) || rows.length < 60) {
+    throw new Error("Insufficient 5-minute candle data for " + symbol);
+  }
+
+  return rows.map(c => ({
+    open: Number(c.open),
+    high: Number(c.high),
+    low: Number(c.low),
+    close: Number(c.close),
+    volume: Number(c.volume),
+    time: Number(c.time)
+  }))
+  .filter(c =>
+    Number.isFinite(c.close) &&
+    Number.isFinite(c.open) &&
+    Number.isFinite(c.volume)
+  )
+  .sort((a, b) => a.time - b.time);
+}
 
 function calculateEMA(values, period) {
   const multiplier = 2 / (period + 1);
-
   let ema = values[0];
 
   for (let i = 1; i < values.length; i++) {
@@ -109,9 +118,11 @@ function calculateEMA(values, period) {
   return ema;
 }
 
-// BUY / SELL ANALYSIS
-
 function calculateSignal(candles) {
+  if (candles.length < 60) {
+    throw new Error("At least 60 candles required");
+  }
+
   const closes = candles.map(c => c.close);
   const volumes = candles.map(c => c.volume);
 
@@ -135,38 +146,25 @@ function calculateSignal(candles) {
   let buyScore = 0;
   let sellScore = 0;
 
-  // EMA TREND
-
   if (ema9 > ema20) buyScore += 2;
   else sellScore += 2;
 
   if (ema20 > ema50) buyScore += 2;
   else sellScore += 2;
 
-  // PRICE POSITION
-
   if (last.close > ema9) buyScore++;
   else sellScore++;
 
-  // PRICE MOMENTUM
-
   if (last.close > previous.close) buyScore++;
   else sellScore++;
-
-  // VOLUME CONFIRMATION
 
   if (volumeRising) {
     if (last.close > last.open) buyScore += 2;
     else if (last.close < last.open) sellScore += 2;
   }
 
-  // FINAL DIRECTION: ONLY BUY OR SELL
-
-  const signal =
-    buyScore >= sellScore ? "BUY" : "SELL";
-
   return {
-    signal,
+    signal: buyScore >= sellScore ? "BUY" : "SELL",
     buyScore,
     sellScore,
     price: last.close,
@@ -177,37 +175,25 @@ function calculateSignal(candles) {
   };
 }
 
-// HEALTH CHECK
-
 app.get("/api/health", (req, res) => {
   res.json({
     status: "OK",
-    scanner: "UD Crypto Intelligence",
+    exchange: "CoinDCX Futures",
     timeframe: "5m"
   });
 });
 
-// SYMBOL LIST API
-
 app.get("/api/symbols", async (req, res) => {
   try {
     const symbols = await getSymbols();
-
-    res.json({
-      count: symbols.length,
-      symbols
-    });
-
+    res.json({ count: symbols.length, symbols });
   } catch (error) {
-    console.error("SYMBOLS API ERROR:", error.message);
-
+    console.error("SYMBOLS ERROR:", error.response?.status, error.response?.data || error.message);
     res.status(502).json({
-      error: error.message
+      error: error.response?.data?.message || error.message
     });
   }
 });
-
-// COIN ANALYSIS API
 
 app.get("/api/analyze/:symbol", async (req, res) => {
   try {
@@ -220,30 +206,29 @@ app.get("/api/analyze/:symbol", async (req, res) => {
     }
 
     const candles = await getCandles(symbol);
-
-    const analysis = calculateSignal(candles);
+    const result = calculateSignal(candles);
 
     res.json({
       symbol,
+      exchange: "CoinDCX",
       timeframe: "5m",
-      ...analysis,
+      ...result,
       updatedAt: new Date().toISOString()
     });
 
   } catch (error) {
-    console.error("ANALYSIS API ERROR:", error.message);
-
+    console.error("ANALYSIS ERROR:", error.response?.status, error.response?.data || error.message);
     res.status(502).json({
-      error: error.message
+      error: error.response?.data?.message || error.message
     });
   }
 });
-
-// SERVER START
 
 const PORT = process.env.PORT || 3000;
 
 app.listen(PORT, () => {
   console.log("UD CRYPTO BUY-SELL SCANNER RUNNING");
-  console.log("PORT:", PORT);
+  console.log("Exchange: CoinDCX Futures");
+  console.log("Timeframe: 5m");
+  console.log("Port:", PORT);
 });
