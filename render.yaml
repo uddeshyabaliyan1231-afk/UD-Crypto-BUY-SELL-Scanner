@@ -1,0 +1,10 @@
+
+services:
+  - type: web
+    name: ud-crypto-buy-sell-scanner
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /api/symbols
+    autoDeploy: true
