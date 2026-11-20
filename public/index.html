@@ -1,0 +1,134 @@
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>UD Crypto Intelligence Scanner</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#080d18;color:#fff;font-family:Arial,sans-serif;padding:20px}
+.container{max-width:850px;margin:auto}
+h1{color:#00d9ff;text-align:center}
+.panel{background:#111b2d;padding:20px;border-radius:14px;margin:18px 0}
+input,button{padding:14px;border:0;border-radius:8px;font-size:16px}
+input{width:100%;background:#202d43;color:white;margin-bottom:10px}
+button{background:#00bde9;color:#00121b;font-weight:bold;width:100%;cursor:pointer}
+.result{text-align:center;padding:25px;margin-top:15px;border-radius:12px;background:#202d43}
+.signal{font-size:42px;font-weight:bold;margin:15px}
+.buy{color:#00e68a}
+.sell{color:#ff5268}
+.detail{display:flex;justify-content:space-between;padding:12px 0;border-bottom:1px solid #34445c}
+.small{color:#9eafc8;font-size:13px}
+#coinList{max-height:300px;overflow:auto}
+.coin{padding:10px;border-bottom:1px solid #34445c;cursor:pointer}
+.coin:hover{background:#263852}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>UD CRYPTO INTELLIGENCE</h1>
+<p class="small" style="text-align:center">5 MINUTE BUY / SELL ANALYSIS</p>
+
+<div class="panel">
+<h3>Search Any USDT Coin</h3>
+<input id="symbol" placeholder="Enter coin e.g. DOGEUSDT">
+<button onclick="analyze()">ANALYZE COIN</button>
+
+<div class="result" id="result" style="display:none">
+<div id="coinName"></div>
+<div class="signal" id="signal"></div>
+<div class="detail"><span>Current Price</span><b id="price">-</b></div>
+<div class="detail"><span>BUY Score</span><b id="buyScore">-</b></div>
+<div class="detail"><span>SELL Score</span><b id="sellScore">-</b></div>
+<div class="detail"><span>Volume Confirmation</span><b id="volume">-</b></div>
+<p class="small" id="updated"></p>
+</div>
+<p id="error" class="small"></p>
+</div>
+
+<div class="panel">
+<h3>All Available USDT Perpetual Coins</h3>
+<input id="filter" placeholder="Filter coin list..." oninput="filterCoins()">
+<div id="coinList">Loading coins...</div>
+</div>
+</div>
+
+<script>
+let allSymbols = [];
+
+async function loadSymbols(){
+  try{
+    const r = await fetch("/api/symbols");
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error);
+    allSymbols = data.symbols || [];
+    renderCoins(allSymbols);
+  }catch(e){
+    document.getElementById("coinList").textContent =
+      "Unable to load coin list. Refresh the page.";
+  }
+}
+
+function renderCoins(symbols){
+  document.getElementById("coinList").innerHTML =
+    symbols.map(s => `<div class="coin" onclick="selectCoin('${s}')">${s}</div>`).join("");
+}
+
+function filterCoins(){
+  const q = document.getElementById("filter").value.toUpperCase();
+  renderCoins(allSymbols.filter(s => s.includes(q)));
+}
+
+function selectCoin(s){
+  document.getElementById("symbol").value = s;
+  analyze();
+}
+
+async function analyze(){
+  const symbol = document.getElementById("symbol").value
+    .trim().toUpperCase();
+  const error = document.getElementById("error");
+  const result = document.getElementById("result");
+
+  error.textContent = "";
+  if(!symbol){
+    error.textContent = "Enter a coin symbol.";
+    return;
+  }
+
+  error.textContent = "Analyzing...";
+  result.style.display = "none";
+
+  try{
+    const r = await fetch("/api/analyze/" + encodeURIComponent(symbol));
+    const data = await r.json();
+    if(!r.ok) throw new Error(data.error || "Analysis failed");
+
+    document.getElementById("coinName").textContent =
+      data.symbol + " · " + data.timeframe;
+
+    const signal = document.getElementById("signal");
+    signal.textContent = data.signal;
+    signal.className = "signal " +
+      (data.signal === "BUY" ? "buy" : "sell");
+
+    document.getElementById("price").textContent = data.price;
+    document.getElementById("buyScore").textContent = data.buyScore;
+    document.getElementById("sellScore").textContent = data.sellScore;
+    document.getElementById("volume").textContent =
+      data.volumeRising ? "CONFIRMED" : "NOT CONFIRMED";
+    document.getElementById("updated").textContent =
+      "Updated: " + new Date(data.updatedAt).toLocaleString();
+
+    error.textContent = "";
+    result.style.display = "block";
+  }catch(e){
+    error.textContent = e.message;
+  }
+}
+
+loadSymbols();
+</script>
+</body>
+</html>
