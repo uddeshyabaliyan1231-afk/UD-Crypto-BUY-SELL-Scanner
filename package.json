@@ -1,0 +1,14 @@
+{
+  "name": "ud-crypto-buy-sell-scanner",
+  "version": "1.0.0",
+  "description": "UD Crypto Intelligence BUY SELL Scanner",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cors": "^2.8.5",
+    "express": "^4.21.2"
+  }
+}
